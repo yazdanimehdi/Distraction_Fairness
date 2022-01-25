@@ -10,7 +10,7 @@ import torch.nn as nn
 class ProtectedAttributeClassifier(nn.Module):
     def __init__(self):
         super(ProtectedAttributeClassifier, self).__init__()
-        linear_list = [124, 256, 128, 9]
+        linear_list = [13, 64, 32, 1]
         self.linear_layers = nn.ModuleList()
         for i in range(len(linear_list) - 2):
             self.linear_layers.append(nn.Linear(linear_list[i], linear_list[i+1]))
@@ -21,7 +21,7 @@ class ProtectedAttributeClassifier(nn.Module):
         for layer in self.linear_layers:
             x = F.relu(layer(x))
 
-        return self.final_layer(x), x
+        return torch.sigmoid(self.final_layer(x)), x
 
 
 def scaled_dot_product(q, k, v, mask=None):
@@ -82,7 +82,7 @@ class MultiHeadAttention(nn.Module):
 class AttributeClassifier(nn.Module):
     def __init__(self, p_model):
         super(AttributeClassifier, self).__init__()
-        linear_list = [124, 256, 128, 1]
+        linear_list = [14, 64, 32, 1]
         self.p_model = p_model
         self.linear_layers = nn.ModuleList()
         for i in range(len(linear_list) - 2):
@@ -98,11 +98,71 @@ class AttributeClassifier(nn.Module):
         return self.attention.parameters()
 
     def forward(self, x):
-        x = np.delete(x, 123, 1)
-        x_p = torch.Tensor(np.copy(x))
+        x_p = np.delete(x, 9, 1)
         for layer in self.linear_layers:
             x = F.relu(layer(x))
+            x = F.dropout(x, 0.2)
         with torch.no_grad():
             q = self.p_model(x_p)[1].unsqueeze(dim=2).unsqueeze(dim=1)
         x, attention = self.attention(x.unsqueeze(dim=2), q)
-        return torch.sigmoid(self.final_layer(x.view(-1, 128))), attention
+        return torch.sigmoid(self.final_layer(x.view(-1, 32))), attention
+
+
+class AttributeClassifierAblation(nn.Module):
+    def __init__(self, dataset='Adult', accuracy_layers=(14, 64, 32, 1), fairness_layers=(32, 32, 32, 32),
+                 fairness_layers_position=3, fairness_layer_mode="linear"):
+        super(AttributeClassifierAblation, self).__init__()
+        self.mode = fairness_layer_mode
+        assert(fairness_layers_position < len(accuracy_layers))
+        assert(fairness_layers[0] == accuracy_layers[fairness_layers_position - 1])
+        assert(fairness_layers[-1] == accuracy_layers[fairness_layers_position - 1])
+        if dataset == 'Adult':
+            assert(accuracy_layers[0] == 14)
+
+        elif dataset == 'Health':
+            assert(accuracy_layers[0] == 125)
+
+        else:
+            raise NotImplementedError()
+
+        self.accuracy_layers_part_1 = nn.ModuleList()
+        for i in range(fairness_layers_position - 1):
+            self.accuracy_layers_part_1.append(nn.Linear(accuracy_layers[i], accuracy_layers[i + 1]))
+
+        self.accuracy_layers_part_2 = nn.ModuleList()
+        for i in range(fairness_layers_position - 1, len(accuracy_layers) - 1):
+            self.accuracy_layers_part_2.append(nn.Linear(accuracy_layers[i], accuracy_layers[i + 1]))
+
+        self.fairness_layers = nn.ModuleList()
+        if fairness_layer_mode == 'linear':
+            for i in range(len(fairness_layers) - 1):
+                self.fairness_layers.append(nn.Linear(fairness_layers[i], fairness_layers[i + 1]))
+        elif fairness_layer_mode == 'attention':
+            self.fairness_layers.append(MultiHeadAttention(1, 1, 1))
+        else:
+            raise NotImplementedError()
+
+    def get_accuracy_parameters(self):
+        return itertools.chain(self.accuracy_layers_part_1.parameters(), self.accuracy_layers_part_2.parameters())
+
+    def get_fairness_parameters(self):
+        return self.fairness_layers.parameters()
+
+    def forward(self, x):
+
+        for layer in self.accuracy_layers_part_1:
+            x = F.relu(layer(x))
+
+        for layer in self.fairness_layers:
+            if self.mode == 'linear':
+                x = F.relu(layer(x))
+            else:
+                x = layer(x)
+
+        for idx, layer in enumerate(self.accuracy_layers_part_2):
+            if idx != len(self.accuracy_layers_part_2) - 1:
+                x = F.relu(layer(x))
+            else:
+                x = torch.sigmoid(layer(x))
+
+        return x

@@ -1,60 +1,19 @@
 import pickle
 import time
 
-import pandas as pd
 import numpy as np
-from fairtorch import DemographicParityLoss, EqualiedOddsLoss
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklego.metrics import equal_opportunity_score
+from fairtorch import DemographicParityLoss
 
 import torch
 from torch.optim.lr_scheduler import ExponentialLR
 from tqdm import tqdm
+
+from load_health import pre_process_and_load_health
 from metrics import demographic_parity_difference_soft
 from model import ProtectedAttributeClassifier, AttributeClassifier
 
 
-def gather_labels(df):
-    labels = []
-    for j in range(df.shape[1]):
-        if type(df[0, j]) is str:
-            labels.append(np.unique(df[:, j]).tolist())
-        else:
-            labels.append(np.median(df[:, j]))
-    return labels
-
-
-raw_df = pd.read_csv("health.csv")
-raw_df = raw_df[raw_df['YEAR_t'] == 'Y3']
-sex = raw_df['sexMISS'] == 0
-age = raw_df['age_MISS'] == 0
-raw_df = raw_df.drop(['DaysInHospital', 'MemberID_t', 'YEAR_t'], axis=1)
-raw_df = raw_df[sex & age]
-ages = raw_df[[f'age_{i}5' for i in range(0, 9)]]
-sexs = raw_df[['sexMALE', 'sexFEMALE']]
-charlson = raw_df['CharlsonIndexI_max']
-
-x = raw_df.drop(
-    [f'age_{i}5' for i in range(0, 9)] + ['sexMALE', 'sexFEMALE', 'CharlsonIndexI_max',
-                                          'CharlsonIndexI_min',
-                                          'CharlsonIndexI_ave', 'CharlsonIndexI_range',
-                                          'CharlsonIndexI_stdev',
-                                          'trainset'], axis=1)
-u = ages.to_numpy().argmax(axis=1)
-x['age'] = u
-x['sex'] = sexs.to_numpy().argmax(axis=1)
-y = (charlson.to_numpy() > 0).astype(np.float32)
-x = x.to_numpy()
-labels = gather_labels(x)
-target_labels = y.reshape(-1, 1)
-scaler = MinMaxScaler()
-X = x
-X, X_test, y, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-X = np.array(X)
-X_test = np.array(X_test)
-y = np.array(y)
-y_test = np.array(y_test)
+X, y, X_test, y_test = pre_process_and_load_health()
 gpu = 0
 device = torch.device(gpu if torch.cuda.is_available() else "cpu")
 
@@ -68,40 +27,35 @@ MODEL_NAME = f"model-{int(time.time())}"
 
 
 
-def fwd_pass(x, y_l, k):
+def fwd_pass(x, y_l):
     model.zero_grad()
     x = torch.Tensor(x).to(torch.float)
     y_l = torch.Tensor(y_l).view(-1, 1).to(torch.float)
     y_l = y_l.to(device)
-    out = model(x.to(device))[0]
-    out = out.to(torch.float)
-    loss_dp = criterion_dp(x, out, x[:, 123], y_l)
-    matches = [torch.round(i) == torch.round(j) for i, j in zip(out, y_l)]
-    acc = matches.count(True) / len(matches)
-    loss_acc = criterion_acc(out, y_l)
-    if k % 20 == 0:
-        for name, param in model.named_parameters():
-            if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
-                        'attention.o_proj.bias']:
-                param.require_grad = True
-            else:
-                param.require_grad = False
-
-        loss_dp.backward()
-        optimizer_dp.step()
-        out = model(x.to(device))[0]
-        out = out.to(torch.float)
-        loss_acc = criterion_acc(out, y_l)
     for name, param in model.named_parameters():
         if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
                     'attention.o_proj.bias']:
-            param.require_grad = False
+            param.requires_grad = True
         else:
-            param.require_grad = True
+            param.requires_grad = False
+    out = model(x.to(device))[0]
+    out = out.to(torch.float)
+    loss_dp = criterion_dp(x, out, x[:, 123], y_l)
+    loss_dp.backward()
+    optimizer_dp.step()
 
-    # out = model(x.to(device))[0]
-    # out = out.to(torch.float)
+    for name, param in model.named_parameters():
+        if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
+                    'attention.o_proj.bias']:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
 
+    out = model(x.to(device))[0]
+    out = out.to(torch.float)
+    matches = [torch.round(i) == torch.round(j) for i, j in zip(out, y_l)]
+    acc = matches.count(True) / len(matches)
+    loss_acc = criterion_acc(out, y_l)
     loss_acc.backward()
     optimizer_acc.step()
 
@@ -138,7 +92,7 @@ def test_func(model_f, y_label, X_test_f):
 
 
 acc_dp = {}
-for alpha in [50]:
+for alpha in [1, 20, 40, 60, 80, 100, 200, 400, 600, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500]:
     model = AttributeClassifier(model_protected)
     optimizer_acc = torch.optim.Adam(model.get_linear_parameters(), lr=1e-3)
     optimizer_dp = torch.optim.Adam(model.get_attention_parameters(), lr=1e-5)
@@ -146,7 +100,7 @@ for alpha in [50]:
     scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.9)
     scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
     criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1, 2, 3, 4, 5, 6, 7, 8], alpha=alpha)
-    EPOCHS = 50
+    EPOCHS = 100
     BATCH_SIZE = 100
     test_acc = []
     test_dp = []
@@ -162,7 +116,7 @@ for alpha in [50]:
                     batch_X = X[i: i + BATCH_SIZE]
                     batch_y = y[i: i + BATCH_SIZE]
 
-                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y, i)
+                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y)
 
                     losses.append(loss.item())
                     losses_dp.append(loss_dp)
@@ -187,5 +141,5 @@ for alpha in [50]:
 
     acc_dp[alpha] = (test_acc, test_dp)
 
-# with open('acc_dps_health.pkl', 'wb') as fp:
-#     pickle.dump(acc_dp, fp)
+with open('acc_dps_health.pkl', 'wb') as fp:
+    pickle.dump(acc_dp, fp)

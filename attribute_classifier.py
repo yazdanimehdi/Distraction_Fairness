@@ -316,22 +316,25 @@ def fwd_pass(x, y_l, criterion_dp_n):
     x = torch.Tensor(x).to(torch.float)
     y_l = torch.Tensor(y_l).view(-1, 1).to(torch.float)
     y_l = y_l.to(device)
-    for name, param in model.named_parameters():
-        if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
-                    'attention.o_proj.bias']:
-            param.require_grad = True
-        else:
-            param.require_grad = False
+    # for name, param in model.named_parameters():
+    #     if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
+    #                 'attention.o_proj.bias']:
+    #         param.require_grad = True
+    #     else:
+    #         param.require_grad = False
     out = model(x.to(device))[0]
     out = out.to(torch.float)
     loss_dp = criterion_dp_n(y_l, out, x[:, 9])
 
     loss_dp.backward()
     optimizer_dp.step()
-    for name, param in model.named_parameters():
-        if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
-                    'attention.o_proj.bias']:
-            param.require_grad = False
+    # for name, param in model.named_parameters():
+    #     if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
+    #                 'attention.o_proj.bias']:
+    #         param.require_grad = False
+    #     else:
+    #         param.require_grad = True
+    #     print(param)
 
     out = model(x.to(device))[0]
     out = out.to(torch.float)
@@ -404,15 +407,14 @@ class FairLossFunc(torch.nn.Module):
         return losses_max
 
 
-for eta in [100]:
-    criterion_dp = DemographicParityLoss(alpha=eta)
+for eta in [1000]:
     model = AttributeClassifier(model_protected)
     optimizer_acc = torch.optim.Adam(model.get_linear_parameters(), lr=1e-3)
     optimizer_dp = torch.optim.Adam(model.get_attention_parameters(), lr=1e-5)
     criterion_acc = torch.nn.BCELoss()
     scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.9)
     scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
-    #criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1], alpha=alpha)
+    criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1], alpha=eta)
     EPOCHS = 50
     BATCH_SIZE = 100
     test_acc = []
