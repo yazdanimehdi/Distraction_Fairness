@@ -235,9 +235,9 @@ def country_func(x):
 
 
 def y_func(x):
-    if x == '<=50K':
+    if '<=50K' in x:
         return 0
-    elif x == '>50K':
+    elif '>50K' in x:
         return 1
 
 
@@ -248,34 +248,29 @@ model_protected = ProtectedAttributeClassifier()
 model_protected.load_state_dict(torch.load('protected.pt', map_location=torch.device('cpu')))
 model_protected.to(device)
 
-model = AttributeClassifier(model_protected)
 
 MODEL_NAME = f"model-{int(time.time())}"
-optimizer_acc = torch.optim.Adam(model.get_linear_parameters(), lr=1e-4)
-optimizer_dp = torch.optim.Adam(model.get_attention_parameters(), lr=5e-6)
-criterion_acc = torch.nn.BCELoss()
-scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.95)
-scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.95)
 
-criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1], alpha=100)
 
-whole_data_raw = pd.read_csv('adult', sep=', ', engine='python')
-best_dec_acc = 0
-best_train_acc = 0
 
-shuffled = whole_data_raw.sample(frac=1, random_state=42).reset_index(drop=True)
-df_train_raw = shuffled[0:int(len(shuffled) * 0.8)]
-df_train_raw.reset_index(inplace=True)
-df_dev_raw = shuffled[int(len(shuffled) * 0.8):int(len(shuffled) * 0.8 + len(shuffled) * 0.1)]
-df_dev_raw.reset_index(inplace=True)
-df_test_raw = shuffled[int(len(shuffled) * 0.8 + len(shuffled) * 0.1):]
-df_test_raw.reset_index(inplace=True)
 
-n_train = len(df_train_raw)
-n_dev = len(df_dev_raw)
-n_test = len(df_test_raw)
-general_n_test = len(df_test_raw)
-df_raw = pd.concat([df_train_raw, df_dev_raw, df_test_raw])
+df_raw = pd.read_csv('adult.data', sep=', ', engine='python')
+df_raw_test = pd.read_csv('adult.test', sep=', ', engine='python')
+
+#
+# shuffled = whole_data_raw.sample(frac=1, random_state=42).reset_index(drop=True)
+# df_train_raw = shuffled[0:int(len(shuffled) * 0.8)]
+# df_train_raw.reset_index(inplace=True)
+# df_dev_raw = shuffled[int(len(shuffled) * 0.8):int(len(shuffled) * 0.8 + len(shuffled) * 0.1)]
+# df_dev_raw.reset_index(inplace=True)
+# df_test_raw = shuffled[int(len(shuffled) * 0.8 + len(shuffled) * 0.1):]
+# df_test_raw.reset_index(inplace=True)
+
+# n_train = len(df_train_raw)
+# n_dev = len(df_dev_raw)
+# n_test = len(df_test_raw)
+# general_n_test = len(df_test_raw)
+# df_raw = pd.concat([df_train_raw, df_dev_raw, df_test_raw])
 
 df_raw['workclass'] = df_raw['workclass'].apply(work_func)
 df_raw['education'] = df_raw['education'].apply(education_func)
@@ -289,16 +284,34 @@ df_raw['Y'] = df_raw['Y'].apply(y_func)
 df_raw.dropna(inplace=True)
 scaler = MinMaxScaler()
 y = df_raw['Y']
-X = df_raw.drop(['Y', 'index'], axis=1)
+X = df_raw.drop(['Y'], axis=1)
 X = scaler.fit_transform(X)
-X, X_test, y, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 X = np.array(X)
-X_test = np.array(X_test)
 y = np.array(y)
+
+
+df_raw_test['workclass'] = df_raw_test['workclass'].apply(work_func)
+df_raw_test['education'] = df_raw_test['education'].apply(education_func)
+df_raw_test['marital-status'] = df_raw_test['marital-status'].apply(marital_func)
+df_raw_test['occupation'] = df_raw_test['occupation'].apply(occupation_func)
+df_raw_test['relationship'] = df_raw_test['relationship'].apply(relationship_func)
+df_raw_test['race'] = df_raw_test['race'].apply(race_func)
+df_raw_test['sex'] = df_raw_test['sex'].apply(sex_func)
+df_raw_test['native-country'] = df_raw_test['native-country'].apply(country_func)
+df_raw_test['Y'] = df_raw_test['Y'].apply(y_func)
+df_raw_test.dropna(inplace=True)
+y_test = df_raw_test['Y']
+X_test = df_raw_test.drop(['Y'], axis=1)
+X_test = scaler.fit_transform(X_test)
+X_test = np.array(X_test)
 y_test = np.array(y_test)
 
+loss_f_after_dp = []
+loss_f_after_acc = []
+loss_a_after_dp = []
+loss_a_after_acc = []
 
-def fwd_pass(x, y_l):
+def fwd_pass(x, y_l, criterion_dp_n):
     model.zero_grad()
     x = torch.Tensor(x).to(torch.float)
     y_l = torch.Tensor(y_l).view(-1, 1).to(torch.float)
@@ -311,10 +324,10 @@ def fwd_pass(x, y_l):
             param.require_grad = False
     out = model(x.to(device))[0]
     out = out.to(torch.float)
-    loss_dp = criterion_dp(x, out, x[:, 9])
+    loss_dp = criterion_dp_n(y_l, out, x[:, 9])
+
     loss_dp.backward()
     optimizer_dp.step()
-
     for name, param in model.named_parameters():
         if name in ['attention.qkv_proj.weight', 'attention.qkv_proj.bias', 'attention.o_proj.weight',
                     'attention.o_proj.bias']:
@@ -323,12 +336,18 @@ def fwd_pass(x, y_l):
     out = model(x.to(device))[0]
     out = out.to(torch.float)
 
-    matches = [torch.round(i) == torch.round(j) for i, j in zip(out, y_l)]
-    acc = matches.count(True) / len(matches)
     loss_acc = criterion_acc(out, y_l)
+    loss_a_after_dp.append(loss_acc.item())
+    loss_f_after_dp.append(criterion_dp(x, out, x[:, 9]).item())
     loss_acc.backward()
     optimizer_acc.step()
+    out = model(x.to(device))[0]
 
+    matches = [torch.round(i) == torch.round(j) for i, j in zip(out, y_l)]
+    acc = matches.count(True) / len(matches)
+
+    loss_a_after_acc.append(criterion_acc(out, y_l).item())
+    loss_f_after_acc.append(criterion_dp(x, out, x[:, 9]).item())
     return acc, loss_acc, loss_dp.detach().numpy(), out
 
 
@@ -361,25 +380,56 @@ def test_func(model_f, y_label, X_test_f):
     return acc, demographic_parity_difference_soft(y_label, X_test_f[:, 9], y_pred)
 
 
-def train(net):
+acc_dp = {}
+
+
+class FairLossFunc(torch.nn.Module):
+    def __init__(self, eta, protected):
+        super(FairLossFunc, self).__init__()
+        self.protected = protected
+        self.eta = eta
+
+    def forward(self, y_label, y_pred, protected):
+        losses_max = torch.Tensor([0])
+        for i in self.protected:
+            for j in self.protected:
+                index_c1 = protected == i
+                index_c2 = protected == j
+                p_1 = torch.mean(y_pred[index_c1])
+                p_2 = torch.mean(y_pred[index_c2])
+                l = ((p_1 - p_2)**2)
+                if losses_max.item() < l.item():
+                    losses_max = l
+
+        return losses_max
+
+
+for eta in [100]:
+    criterion_dp = DemographicParityLoss(alpha=eta)
+    model = AttributeClassifier(model_protected)
+    optimizer_acc = torch.optim.Adam(model.get_linear_parameters(), lr=1e-3)
+    optimizer_dp = torch.optim.Adam(model.get_attention_parameters(), lr=1e-5)
+    criterion_acc = torch.nn.BCELoss()
+    scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.9)
+    scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
+    #criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1], alpha=alpha)
     EPOCHS = 50
     BATCH_SIZE = 100
-
+    test_acc = []
+    test_dp = []
     with open("model.log", "a") as f:
         for epoch in range(EPOCHS):
             losses = []
-            losses_dp = []
             accs = []
+            losses_dp = []
             with tqdm(range(0, len(X), BATCH_SIZE)) as tepoch:
                 for i in tepoch:
-                    tepoch.set_description(f"Epoch {epoch + 1}")
-                    try:
+                    tepoch.set_description(f"Alpha{eta}, Epoch {epoch + 1}")
 
-                        batch_X = X[i: i + BATCH_SIZE]
-                        batch_y = y[i: i + BATCH_SIZE]
-                    except:
-                        continue
-                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y)
+                    batch_X = X[i: i + BATCH_SIZE]
+                    batch_y = y[i: i + BATCH_SIZE]
+
+                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y, criterion_dp)
 
                     losses.append(loss.item())
                     losses_dp.append(loss_dp)
@@ -388,8 +438,10 @@ def train(net):
                     loss_mean = np.array(losses).mean()
                     loss_dp_mean = np.array(losses_dp).mean()
                     tepoch.set_postfix(loss=loss_mean, accuracy=100. * acc_mean, loss_dp=loss_dp_mean)
-                    if i % 100000 == 0:
+                    if i == 0:
                         acc, sdp = test_func(model, y_test, X_test)
+                        test_acc.append(acc)
+                        test_dp.append(sdp[0])
                         print(f'ACC: {acc}')
                         print(f'SDP: {sdp}')
                         f.write(
@@ -401,4 +453,4 @@ def train(net):
             dt = time.strftime("%Y_%m_%d-%H_%M_%S")
 
 
-train(model)
+    acc_dp[eta] = (test_acc, test_dp)

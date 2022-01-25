@@ -10,7 +10,7 @@ import torch.nn as nn
 class ProtectedAttributeClassifier(nn.Module):
     def __init__(self):
         super(ProtectedAttributeClassifier, self).__init__()
-        linear_list = [13, 64, 32, 1]
+        linear_list = [124, 256, 128, 9]
         self.linear_layers = nn.ModuleList()
         for i in range(len(linear_list) - 2):
             self.linear_layers.append(nn.Linear(linear_list[i], linear_list[i+1]))
@@ -82,7 +82,7 @@ class MultiHeadAttention(nn.Module):
 class AttributeClassifier(nn.Module):
     def __init__(self, p_model):
         super(AttributeClassifier, self).__init__()
-        linear_list = [14, 64, 32, 1]
+        linear_list = [124, 256, 128, 1]
         self.p_model = p_model
         self.linear_layers = nn.ModuleList()
         for i in range(len(linear_list) - 2):
@@ -98,10 +98,11 @@ class AttributeClassifier(nn.Module):
         return self.attention.parameters()
 
     def forward(self, x):
-        x_p = np.delete(x, 9, 1)
+        x = np.delete(x, 123, 1)
+        x_p = torch.Tensor(np.copy(x))
         for layer in self.linear_layers:
             x = F.relu(layer(x))
         with torch.no_grad():
             q = self.p_model(x_p)[1].unsqueeze(dim=2).unsqueeze(dim=1)
         x, attention = self.attention(x.unsqueeze(dim=2), q)
-        return torch.sigmoid(self.final_layer(x.view(-1, 32))), attention
+        return torch.sigmoid(self.final_layer(x.view(-1, 128))), attention

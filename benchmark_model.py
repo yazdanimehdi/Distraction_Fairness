@@ -1,4 +1,31 @@
-from model import ProtectedAttributeClassifier
+import itertools
+import math
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+import torch.nn as nn
+
+
+class AC(nn.Module):
+    def __init__(self):
+        super(AC, self).__init__()
+        linear_list = [14, 64, 32, 16, 1]
+        self.linear_layers = nn.ModuleList()
+        for i in range(len(linear_list) - 2):
+            self.linear_layers.append(nn.Linear(linear_list[i], linear_list[i+1]))
+
+        self.final_layer = nn.Linear(linear_list[-2], linear_list[-1])
+
+    def forward(self, x):
+        for layer in self.linear_layers:
+            x = F.relu(layer(x))
+
+        return F.sigmoid(self.final_layer(x))
+
+from fairtorch import DemographicParityLoss
+
+from model import ProtectedAttributeClassifier, AttributeClassifier
 
 import torch
 import pickle
@@ -9,23 +36,9 @@ import time
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import ExponentialLR
 from sklearn.preprocessing import MinMaxScaler
-from sklego.metrics import equal_opportunity_score
-
+from metrics import demographic_parity_difference_soft
 
 from tqdm import tqdm
-
-gpu = 0
-device = torch.device(gpu if torch.cuda.is_available() else "cpu")
-
-model = ProtectedAttributeClassifier()
-
-MODEL_NAME = f"model-{int(time.time())}"
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-criterion = torch.nn.BCELoss()
-scheduler = ExponentialLR(optimizer, gamma=0.90)
-
-print("init done")
-
 
 
 def work_func(x):
@@ -79,7 +92,6 @@ def education_func(x):
 
 
 def marital_func(x):
-
     if x == 'Married-civ-spouse':
         return 0
     elif x == 'Never-married':
@@ -97,7 +109,6 @@ def marital_func(x):
 
 
 def occupation_func(x):
-
     if x == 'Sales':
         return 0
     elif x == 'Farming-fishing':
@@ -144,7 +155,6 @@ def relationship_func(x):
 
 
 def race_func(x):
-
     if x == 'White':
         return 0
     elif x == 'Black':
@@ -158,7 +168,6 @@ def race_func(x):
 
 
 def sex_func(x):
-
     if x == 'Male':
         return 0
     elif x == 'Female':
@@ -166,7 +175,6 @@ def sex_func(x):
 
 
 def country_func(x):
-
     if x == 'France':
         return 0
     elif x == 'United-States':
@@ -252,12 +260,22 @@ def country_func(x):
 
 
 def y_func(x):
-
-    if x == '<=50K':
+    if '<=50K' in x:
         return 0
-    elif x == '>50K':
+    elif '>50K' in x:
         return 1
 
+
+gpu = 0
+device = torch.device(gpu if torch.cuda.is_available() else "cpu")
+
+model = AC()
+MODEL_NAME = f"model-{int(time.time())}"
+optimizer_acc = torch.optim.Adam(model.parameters(), lr=1e-3)
+criterion_acc = torch.nn.BCELoss()
+scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
+
+criterion_dp = DemographicParityLoss(sensitive_classes=[0, 1], alpha=100)
 
 df_raw = pd.read_csv('adult.data', sep=', ', engine='python')
 df_raw_test = pd.read_csv('adult.test', sep=', ', engine='python')
@@ -288,8 +306,8 @@ df_raw['native-country'] = df_raw['native-country'].apply(country_func)
 df_raw['Y'] = df_raw['Y'].apply(y_func)
 df_raw.dropna(inplace=True)
 scaler = MinMaxScaler()
-y = df_raw['sex']
-X = df_raw.drop(['sex', 'Y'], axis=1)
+y = df_raw['Y']
+X = df_raw.drop(['Y'], axis=1)
 X = scaler.fit_transform(X)
 X = np.array(X)
 y = np.array(y)
@@ -304,30 +322,46 @@ df_raw_test['race'] = df_raw_test['race'].apply(race_func)
 df_raw_test['sex'] = df_raw_test['sex'].apply(sex_func)
 df_raw_test['native-country'] = df_raw_test['native-country'].apply(country_func)
 df_raw_test['Y'] = df_raw_test['Y'].apply(y_func)
-y_test = df_raw_test['sex']
-X_test = df_raw_test.drop(['sex', 'Y'], axis=1)
+df_raw_test.dropna(inplace=True)
+y_test = df_raw_test['Y']
+X_test = df_raw_test.drop(['Y'], axis=1)
 X_test = scaler.fit_transform(X_test)
 X_test = np.array(X_test)
 y_test = np.array(y_test)
 
 
-def fwd_pass(x, y_l, train=False):
-    if train:
-        model.zero_grad()
+loss_f_after_dp = []
+loss_f_after_acc = []
+loss_a_after_dp = []
+loss_a_after_acc = []
+
+
+def fwd_pass(x, y_l):
+    model.zero_grad()
     x = torch.Tensor(x).to(torch.float)
-    out = model(x.to(device))
-    out = out[0].to(torch.float)
     y_l = torch.Tensor(y_l).view(-1, 1).to(torch.float)
     y_l = y_l.to(device)
-    loss = criterion(out, y_l)
+    out = model(x.to(device))
     matches = [torch.round(i) == torch.round(j) for i, j in zip(out, y_l)]
     acc = matches.count(True) / len(matches)
+    loss_acc = criterion_acc(out, y_l)
+    loss_a_after_dp.append(loss_acc.item())
+    loss_f_after_dp.append(criterion_dp(x, out, x[:, 9]).item())
+    loss_acc.backward()
+    optimizer_acc.step()
+    return acc, loss_acc, criterion_dp(x, out, x[:, 9]).item(), out
 
-    if train:
-        loss.backward()
-        optimizer.step()
 
-    return acc, loss, out
+def sdp(x, y):
+    male_and_high = [1 if (i == 1 and torch.round(j) == 1) else 0 for i, j in zip(x[:, 9], y)].count(1)
+    male = [i for i in x[:, 9]].count(1)
+    female_and_high = [1 if (i == 0 and torch.round(j) == 1) else 0 for i, j in zip(x[:, 9], y)].count(1)
+    female = [j for j in x[:, 9]].count(0)
+
+    p_male_high = male_and_high / male
+    p_female_high = female_and_high / female
+
+    return abs(p_male_high - p_female_high)
 
 
 def test_func(model_f, y_label, X_test_f):
@@ -339,57 +373,50 @@ def test_func(model_f, y_label, X_test_f):
         for i in tepoch:
             with torch.no_grad():
                 x = torch.Tensor(X_test_f[i: i + 100]).to(device)
-                y_pred.append(model_f(x)[0].cpu())
+                y_pred.append(model_f(x).cpu())
 
     y_pred = torch.cat(y_pred, dim=0)
     matches = [torch.round(i) == torch.round(j) for i, j in zip(y_label, y_pred)]
     acc = matches.count(True) / len(matches)
-    print(acc)
+    return acc, demographic_parity_difference_soft(y_label, X_test_f[:, 9], y_pred)
 
 
 def train(net):
     EPOCHS = 100
-    BATCH_SIZE = 128
+    BATCH_SIZE = 100
 
     with open("model.log", "a") as f:
         for epoch in range(EPOCHS):
             losses = []
+            losses_dp = []
             accs = []
             with tqdm(range(0, len(X), BATCH_SIZE)) as tepoch:
                 for i in tepoch:
                     tepoch.set_description(f"Epoch {epoch + 1}")
                     try:
 
-                        batch_X = X[i: i+BATCH_SIZE]
-                        batch_y = y[i: i+BATCH_SIZE]
+                        batch_X = X[i: i + BATCH_SIZE]
+                        batch_y = y[i: i + BATCH_SIZE]
                     except:
                         continue
-                    acc, loss, _ = fwd_pass(batch_X, batch_y, train=True)
+                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y)
 
                     losses.append(loss.item())
+                    losses_dp.append(loss_dp)
                     accs.append(acc)
                     acc_mean = np.array(accs).mean()
                     loss_mean = np.array(losses).mean()
-                    tepoch.set_postfix(loss=loss_mean, accuracy=100. * acc_mean)
+                    loss_dp_mean = np.array(losses_dp).mean()
+                    tepoch.set_postfix(loss=loss_mean, accuracy=100. * acc_mean, loss_dp=loss_dp_mean)
                     if i % 100000 == 0:
-                        test_func(model, y_test, X_test)
-                        # print(f'Average Loss: {val_loss}')
-                        # print(f'Average Accuracy: {val_acc}')
+                        acc, sdp = test_func(model, y_test, X_test)
+                        print(f'ACC: {acc}')
+                        print(f'SDP: {sdp}')
                         f.write(
-                            f"{MODEL_NAME},{round(time.time(), 3)},{round(float(acc), 2)},{round(float(loss), 4)}\n")
-                #scheduler.step()
-            print(f'Average Loss: {np.array(losses).mean()}')
-            print(f'Average Accuracy: {np.array(accs).mean()}')
+                            f"{MODEL_NAME},{epoch},{round(float(acc_mean), 2)},{round(float(loss_mean), 4)},{acc},{sdp}\n")
+                # scheduler.step()
+            if (epoch + 1) % 20 == 0:
+                 scheduler_acc.step()
             dt = time.strftime("%Y_%m_%d-%H_%M_%S")
-            fn = "without_batching" + str(dt) + str("-") + \
-                 str(epoch) + "_checkpoint.pt"
-            info_dict = {
-                'epoch': epoch,
-                'net_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict()
-            }
-            #torch.save(info_dict, fn)
-
 
 train(model)
-torch.save(model.state_dict(), 'protected.pt')

@@ -37,4 +37,4 @@ ax.set_title('UCI Adult')
 plt.savefig('adult_heat_map.pdf')
 
 res = np.mean(alpha, axis=0)
-most_unfair = np.argwhere((-0.006 < res) & (res < 0.006))
+most_unfair = np.argwhere((-0.2 < res) & (res < 0.2))
