@@ -244,7 +244,7 @@ def y_func(x):
 gpu = 0
 device = torch.device(gpu if torch.cuda.is_available() else "cpu")
 
-model_protected = ProtectedAttributeClassifier()
+model_protected = ProtectedAttributeClassifier('Adult')
 model_protected.load_state_dict(torch.load('protected.pt', map_location=torch.device('cpu')))
 model_protected.to(device)
 
@@ -407,8 +407,8 @@ class FairLossFunc(torch.nn.Module):
         return losses_max
 
 
-for eta in [1000]:
-    model = AttributeClassifier(model_protected)
+for eta in [1, 20, 40, 60, 80, 100, 200, 400, 600, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500]:
+    model = AttributeClassifier(model_protected, dataset='Adult')
     optimizer_acc = torch.optim.Adam(model.get_linear_parameters(), lr=1e-3)
     optimizer_dp = torch.optim.Adam(model.get_attention_parameters(), lr=1e-5)
     criterion_acc = torch.nn.BCELoss()

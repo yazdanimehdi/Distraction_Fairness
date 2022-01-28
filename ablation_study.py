@@ -99,61 +99,60 @@ class FairLossFunc(torch.nn.Module):
 
 def train_model(eta, mode, data, f_layers, a_layers, f_position):
     MODEL_NAME = f"model-{int(time.time())}"
-    for e in [1, 20, 40, 60, 80, 100, 200, 400, 600, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500]:
-        if data == 'Adult':
-            X, y, X_test, y_test = pre_process_and_load_adult()
-        elif data == 'Health':
-            X, y, X_test, y_test = pre_process_and_load_health()
-        else:
-            raise NotImplementedError()
+    if data == 'Adult':
+        X, y, X_test, y_test = pre_process_and_load_adult()
+    elif data == 'Health':
+        X, y, X_test, y_test = pre_process_and_load_health()
+    else:
+        raise NotImplementedError()
 
-        model = AttributeClassifierAblation(dataset=data, fairness_layer_mode=mode, fairness_layers=f_layers,
-                                            accuracy_layers=a_layers, fairness_layers_position=f_position)
-        optimizer_acc = torch.optim.Adam(model.get_accuracy_parameters(), lr=alr)
-        optimizer_dp = torch.optim.Adam(model.get_fairness_parameters(), lr=flr)
-        criterion_acc = torch.nn.BCELoss()
-        scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.9)
-        scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
-        s_c = [0, 1, 2, 3, 4, 5, 6, 7, 8] if data == 'Health' else [0, 1]
-        criterion_dp = DemographicParityLoss(sensitive_classes=s_c, alpha=e)
+    model = AttributeClassifierAblation(dataset=data, fairness_layer_mode=mode, fairness_layers=f_layers,
+                                        accuracy_layers=a_layers, fairness_layers_position=f_position)
+    optimizer_acc = torch.optim.Adam(model.get_accuracy_parameters(), lr=alr)
+    optimizer_dp = torch.optim.Adam(model.get_fairness_parameters(), lr=flr)
+    criterion_acc = torch.nn.BCELoss()
+    scheduler_dp = ExponentialLR(optimizer_dp, gamma=0.9)
+    scheduler_acc = ExponentialLR(optimizer_acc, gamma=0.9)
+    s_c = [0, 1, 2, 3, 4, 5, 6, 7, 8] if data == 'Health' else [0, 1]
+    criterion_dp = DemographicParityLoss(sensitive_classes=s_c, alpha=eta)
 
-        test_acc = []
-        test_dp = []
-        with open("model.log", "a") as f:
-            for epoch in range(EPOCHS):
-                losses = []
-                accs = []
-                losses_dp = []
-                with tqdm(range(0, len(X), BATCH_SIZE)) as tepoch:
-                    for i in tepoch:
-                        tepoch.set_description(f"Alpha{eta}, Epoch {epoch + 1}")
+    test_acc = []
+    test_dp = []
+    with open("model.log", "a") as f:
+        for epoch in range(EPOCHS):
+            losses = []
+            accs = []
+            losses_dp = []
+            with tqdm(range(0, len(X), BATCH_SIZE)) as tepoch:
+                for i in tepoch:
+                    tepoch.set_description(f"Eta {eta}, Epoch {epoch + 1}")
 
-                        batch_X = X[i: i + BATCH_SIZE]
-                        batch_y = y[i: i + BATCH_SIZE]
+                    batch_X = X[i: i + BATCH_SIZE]
+                    batch_y = y[i: i + BATCH_SIZE]
 
-                        acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y, criterion_dp, criterion_acc, optimizer_dp,
-                                                         optimizer_acc, model)
+                    acc, loss, loss_dp, _ = fwd_pass(batch_X, batch_y, criterion_dp, criterion_acc, optimizer_dp,
+                                                     optimizer_acc, model)
 
-                        losses.append(loss.item())
-                        losses_dp.append(loss_dp)
-                        accs.append(acc)
-                        acc_mean = np.array(accs).mean()
-                        loss_mean = np.array(losses).mean()
-                        loss_dp_mean = np.array(losses_dp).mean()
-                        tepoch.set_postfix(loss=loss_mean, accuracy=100. * acc_mean, loss_dp=loss_dp_mean)
-                        if i == 0:
-                            acc, sdp = test_func(model, y_test, X_test)
-                            test_acc.append(acc)
-                            test_dp.append(sdp[0])
-                            print(f'ACC: {acc}')
-                            print(f'SDP: {sdp}')
-                            f.write(
-                                f"{MODEL_NAME},{epoch},{round(float(acc_mean), 2)},{round(float(loss_mean), 4)},{acc},{sdp}\n")
-                    # scheduler.step()
-                if (epoch + 1) % 20 == 0:
-                    scheduler_acc.step()
-                    scheduler_dp.step()
-                dt = time.strftime("%Y_%m_%d-%H_%M_%S")
+                    losses.append(loss.item())
+                    losses_dp.append(loss_dp)
+                    accs.append(acc)
+                    acc_mean = np.array(accs).mean()
+                    loss_mean = np.array(losses).mean()
+                    loss_dp_mean = np.array(losses_dp).mean()
+                    tepoch.set_postfix(loss=loss_mean, accuracy=100. * acc_mean, loss_dp=loss_dp_mean)
+                    if i == 0:
+                        acc, sdp = test_func(model, y_test, X_test)
+                        test_acc.append(acc)
+                        test_dp.append(sdp[0])
+                        print(f'ACC: {acc}')
+                        print(f'SDP: {sdp}')
+                        f.write(
+                            f"{MODEL_NAME},{epoch},{round(float(acc_mean), 2)},{round(float(loss_mean), 4)},{acc},{sdp}\n")
+                # scheduler.step()
+            if (epoch + 1) % 20 == 0:
+                scheduler_acc.step()
+                scheduler_dp.step()
+            dt = time.strftime("%Y_%m_%d-%H_%M_%S")
 
         acc_dp[eta] = (test_acc, test_dp)
 
@@ -191,7 +190,7 @@ if __name__ == '__main__':
         protected = 9
     elif args.data == "Health":
         acc_layers = (125, 256, 128, 1)
-        fairness_layers = (128, 128)
+        fairness_layers = (128, 128, 128, 128)
         protected = 123
     else:
         raise NotImplementedError()

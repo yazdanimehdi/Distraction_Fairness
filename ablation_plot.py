@@ -49,7 +49,7 @@ pareto_set_all = get_pareto_front(pareto_set_all)
 best_accs = [i[0] for i in pareto_set_all]
 dps_best_acc = [i[1] for i in pareto_set_all]
 
-with open('acc_dps_adult_1_fairness_nn.pkl', 'rb') as fp:
+with open('acc_dps_Health_4_linear.pkl', 'rb') as fp:
     acc_dp = pickle.load(fp)
 
 
