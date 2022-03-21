@@ -4,7 +4,7 @@ This is The repository for supporting matterial of "Distraction is All You Need 
 ## Architecture
 ![Distraction](Assets/ModelDiagram.png)
 
-# Training Algorithm
+## Training Algorithm
 ![Algo](Assets/Algo.png)
 ## Requirements
 For installing the requirements run:
