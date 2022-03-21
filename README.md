@@ -2,7 +2,7 @@
 This is The repository for supporting matterial of "Distraction is All You Need for Fairness" [link](https://arxiv.org/abs/2203.07593)
 
 ## Architecture
-![Distraction](Assets/ModelDiagram.pdf)
+![Distraction](Assets/ModelDiagram.png)
 
 # Training Algorithm
 ![Algo](Assets/Algo.png)
@@ -30,7 +30,7 @@ python attribute_classifier_health.py
 
 ## Results
 ### Adult Dataset
-![adult](Assets/adult_compare.pdf)
+![adult](Assets/adult_compare.png)
 
 ## Health Heritage Dataset
-![health](Assets/health_compare.pdf)
+![health](Assets/health_compare.png)
