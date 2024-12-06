@@ -1,4 +1,4 @@
-# This repository is deprecated! Please refer to the published paper "Fair Bilevel Neural Network (FairBiNN): On Balancing fairness and accuracy via Stackelberg Equilibrium" [link](https://arxiv.org/abs/2410.16432) and Github page [link]("https://github.com/yazdanimehdi/FairBiNN")
+# This repository is deprecated! Please refer to the published paper "Fair Bilevel Neural Network (FairBiNN): On Balancing fairness and accuracy via Stackelberg Equilibrium" [link](https://arxiv.org/abs/2410.16432) and [Github page]("https://github.com/yazdanimehdi/FairBiNN")
 
 # Distraction Is All You Need For Fairness
 This is The repository for supporting matterial of "Distraction is All You Need for Fairness" [link](https://arxiv.org/abs/2203.07593)
